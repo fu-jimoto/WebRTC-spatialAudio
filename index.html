@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>VoiceVolumeControl</title>
+<script src="https://download.agora.io/sdk/release/AgoraRTC_N.js"></script>
+<script src="agora-rtm-sdk-1.4.3.js"></script>
+<script src="./vendor/jquery-3.4.1.min.js"></script>
+<link rel="stylesheet" href="index.css">
+</head>
+
+<body>
+<div id="div_device" class="">
+<div class="select">
+<label for="audioSource">Audio source: </label><select id="audioSource"></select>
+</div>
+</div>
+
+<div id="div_join" class="">
+<div class="">
+App ID: <input id="appId" type="text" value="" size="36"></input>
+Channel: <input id="channel" type="text" value="VoiceVolumeControl" size="4"></input>
+Position:
+<select id="position">
+  <option value="1">1</option>
+  <option value="2">2</option>
+  <option value="3">3</option>
+  <option value="4">4</option>
+  <option value="5">5</option>
+</select>
+ニックネーム: <input id="nickname" type="text" value="" size="10"></input>
+<button id="join" class="">Join</button>
+</div>
+</div>
+
+<p>position</p>
+<div id="position1" class="position">position:1</div>
+<div id="position2" class="position">position:2</div>
+<div id="position3" class="position">position:3</div>
+<div id="position4" class="position">position:4</div>
+<div id="position5" class="position">position:5</div>
+
+<script language="javascript" type="module">
+
+if(!AgoraRTC.checkSystemRequirements()) {
+  alert("Your browser does not support WebRTC!");
+}
+
+import { SpatialAudioExtension } from "./index.esm.js";
+
+const extension = new SpatialAudioExtension();
+AgoraRTC.registerExtensions([extension]);
+
+
+//voice
+var client  = AgoraRTC.createClient({mode: 'rtc', codec:'vp8'});
+var audioSelect = document.querySelector('select#audioSource');
+var users = {};
+var remoteUsers = {};
+var localTracks = {
+  audioTrack: null
+};
+
+//rtm
+var rtm, rtmChannel;
+
+//user info
+var min  = 1000;
+var max  = 2000;
+var rand = Math.floor( Math.random() * (max + 1 - min) ) + min
+
+var userInfo = {
+  uid: rand,
+  nickname: null,
+  position: null,
+  join: false
+};
+
+async function joinRTM(){
+  //rtm
+  rtm = AgoraRTM.createInstance(appId.value);
+  await rtm.login({ token: '', uid: String(userInfo.uid) }).then(() => {
+    console.log('AgoraRTM client login success');
+    rtm.on('MessageFromPeer', async function (message, peerId) {
+      var res = JSON.parse(message.text);
+      if(res.meta == "getPosition"){//他拠点からの位置確認
+        rtm.sendMessageToPeer({ text: JSON.stringify({meta: "resPosition", nickname: userInfo.nickname, position: userInfo.position}) }, peerId,).then(sendResult => {
+        }).catch(error => {
+        });
+      }else if(res.meta == "resPosition"){//他拠点の位置情報取得
+        console.log("RTM: MessageFromPeer:pos");
+        users[peerId] = {nickname: res.nickname, position: res.position};
+        updateUserInfo();
+
+        var dist = userInfo.position - res.position;
+        subscribe(remoteUsers[peerId].user, remoteUsers[peerId].mediaType, dist);
+      }
+    });
+
+    //rtm channel
+    rtmChannel = rtm.createChannel(channel.value);
+    rtmChannel.join().then(()=>{
+      console.log("RTM Join Channel Success");
+      rtmChannel.on('ChannelMessage', function (message, memberId) {
+        console.log("Get channel message:"+memberId);
+        console.dir(message);
+        var res = JSON.parse(message.text);
+        if(res.meta == "changePosition"){//他拠点が位置を変更した通知
+          users[memberId] = {nickname: res.nickname, position: res.position};
+          updateUserInfo();
+          var dist = userInfo.position - res.position;
+          updateRemotePosition(memberId, dist);
+        }
+      });
+    });
+  }).catch(err => {
+      console.log('AgoraRTM client login failure', err);
+  });
+}
+
+$("#join").click(async function (e) {
+
+  await joinRTM();
+
+  userInfo.nickname = nickname.value;
+  userInfo.position = position.value;
+
+  client.on("user-published", handleUserPublished);
+  client.on("user-unpublished", handleUserUnpublished);
+
+  await client.join(appId.value,channel.value, null, userInfo.uid)
+  localTracks.audioTrack = await AgoraRTC.createMicrophoneAudioTrack({microphoneId:audioSource.value});
+
+  userInfo.join = true;
+  await client.publish(localTracks.audioTrack);
+  console.log("publish success");
+  users[userInfo.uid] = {nickname: nickname.value, position: position.value};
+  updateUserInfo();
+});
+
+async function subscribe(user, mediaType,dist) {
+  const uid = user.uid;
+  await client.subscribe(user, mediaType);
+  console.log("subscribe success");
+  
+  const processor = extension.createProcessor();
+  user.processor = processor;
+  const track = user.audioTrack;
+  await track.pipe(processor).pipe(track.processorDestination);
+  
+  await track.play();
+}
+
+async function updateRemotePosition(memberId, dist){
+  if(dist < 0){
+    remoteUsers[memberId].user.processor.updateSpatialAzimuth(270);
+  }else if(dist == 0){
+    remoteUsers[memberId].user.processor.updateSpatialAzimuth(0);
+  }else{
+    remoteUsers[memberId].user.processor.updateSpatialAzimuth(90);
+  }
+
+  var volume = 1 + (Math.abs(dist))*7;
+  remoteUsers[memberId].user.processor.updateSpatialDistance(volume);
+}
+
+
+
+function handleUserPublished(user, mediaType) {
+  console.log("handleUserPublished");
+  const id = user.uid;
+  remoteUsers[id] = {user:user, mediaType:mediaType};
+  console.log(id);
+  console.log(String(id));
+  console.log(JSON.stringify({meta: "getPosition"}));
+  rtm.sendMessageToPeer({ text: JSON.stringify({meta: "getPosition"}) }, String(id), ).then(sendResult => {//位置情報を要求
+    console.dir(sendResult);
+  }).catch(error => {
+    console.log(error);
+  });
+}
+
+function handleUserUnpublished(user) {
+  const id = user.uid;
+  delete remoteUsers[id];
+  delete users[id];
+  $("#user_"+id).remove();
+}
+
+function sendUserInfo(uid){
+  var info = JSON.stringify({nickname: nickname.value, uid: uid});
+  rtmChannel.sendMessage({text: info});
+}
+
+function updateUserInfo(){
+  for(var i in users){
+    $("#user_"+i).remove();
+    var userLabel = $(`<p id="user_${i}" class="users">${users[i].nickname}</p>`);
+    $('#position'+users[i].position).append(userLabel);
+  }
+}
+
+// function changePosition(){
+$("#position").change(function (e) {
+  if(userInfo.join === true){
+    userInfo.position = position.value;
+    //参加者全員に位置変更を通知
+    rtmChannel.sendMessage({text: JSON.stringify({meta: "changePosition", nickname: userInfo.nickname, position: userInfo.position})});
+    users[userInfo.uid] = {nickname: userInfo.nickname, position: userInfo.position};
+    updateUserInfo();
+
+    //自分自身も他拠点の音量を変更
+    for(var i in users){
+      if(i != userInfo.uid){
+        var dist = userInfo.position - users[i].position;
+        updateRemotePosition(i, dist)
+      }
+    } 
+    console.log(remoteUsers);
+  }
+})
+
+function getDevices() {
+    AgoraRTC.getDevices().then(devices => {
+    for (var i = 0; i !== devices.length; ++i) {
+      var device = devices[i];
+      var option = document.createElement('option');
+      option.value = device.deviceId;
+      if (device.kind === 'audioinput') {
+        option.text = device.label || 'microphone ' + (audioSelect.length + 1);
+        audioSelect.appendChild(option);
+      } else {
+        console.log('Some other kind of source/device: ', device);
+      }
+    }
+  }).catch(e => {
+    console.log("get devices error!", e);
+  });
+}
+
+getDevices();
+</script>
+</body>
+</html>

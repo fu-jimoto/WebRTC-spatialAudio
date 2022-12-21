@@ -1,0 +1,27 @@
+.player {
+  width: 480px;
+  height: 320px;
+}
+
+.position {
+  float: left;
+  width: 100px;
+  height: 100px;
+  display: inline-block;
+  border: solid;
+  border-radius: 8px; 
+}
+
+.users {
+  width: 90px;
+  height: 10px;
+  margin-block-start: 0px;
+  margin-block-end: 10px;
+}
+
+@media (max-width: 640px) {
+  .player {
+    width: 320px;
+    height: 240px;
+  }
+}
